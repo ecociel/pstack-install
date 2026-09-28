@@ -251,7 +251,44 @@ else
   pass "bad PSTACK_REF is an error"
 fi
 
-# --- 13. dry-run does not create files
+# --- 14. updating an existing balanced CLAUDE.md block succeeds
+PROJ="$WORKDIR/p14"
+make_project "$PROJ"
+cat >"$PROJ/CLAUDE.md" <<'EOF'
+# Top
+<!-- pstack:managed:begin -->
+old managed text
+<!-- pstack:managed:end -->
+# Bottom
+EOF
+if (
+  cd "$PROJ"
+  PSTACK_REPO="$UP" PSTACK_REF="$UP_REF" bash "$SCRIPT" install >/dev/null
+) && grep -q '# Top' "$PROJ/CLAUDE.md" && grep -q '# Bottom' "$PROJ/CLAUDE.md" && grep -q 'pstack is installed' "$PROJ/CLAUDE.md"; then
+  pass "updates a balanced CLAUDE.md block without dropping user text"
+else
+  fail "failed to update a balanced CLAUDE.md block"
+fi
+
+# --- 15. unbalanced marker error explains how to fix
+PROJ="$WORKDIR/p15"
+make_project "$PROJ"
+cat >"$PROJ/CLAUDE.md" <<'EOF'
+# Top
+<!-- pstack:managed:begin -->
+old
+<!-- pstack:managed:end --> 
+# Bottom
+EOF
+out="$(
+  cd "$PROJ"
+  PSTACK_REPO="$UP" PSTACK_REF="$UP_REF" bash "$SCRIPT" install 2>&1 || true
+)"
+if printf '%s' "$out" | grep -q 'How to fix' && printf '%s' "$out" | grep -q 'What this means'; then
+  pass "unbalanced marker error explains meaning and fix"
+else
+  fail "unbalanced marker error lacked explanation"
+fi
 PROJ="$WORKDIR/p13"
 make_project "$PROJ"
 (

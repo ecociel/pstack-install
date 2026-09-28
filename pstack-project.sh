@@ -704,17 +704,57 @@ count_exact_lines() {
   grep -Fxc "$line" "$file" 2>/dev/null || true
 }
 
+explain_markers() {
+  local file="$1"
+  local begin="$2"
+  local end="$3"
+  local begins="${4:-?}"
+  local ends="${5:-?}"
+  cat >&2 <<EOF
+
+What this means
+  This installer only edits the region between two exact marker lines:
+
+    ${begin}
+    ...pstack-managed text...
+    ${end}
+
+  "Unbalanced" means ${file} does not contain exactly one start line and
+  one matching end line (counted ${begins} start, ${ends} end).
+  The file was left unchanged.
+
+  Typical causes:
+    - a space or comment after the marker (the whole line must match)
+    - the end marker was deleted or edited
+    - the marker text was quoted in a sentence instead of sitting alone
+    - two start markers and one end marker, or the reverse
+
+How to fix
+  1. Open ${file}
+  2. Either restore both markers as exact whole lines and delete any
+     extra copies, then rerun this script
+  3. Or delete both marker lines and everything between them if you do
+     not want pstack to manage that file; the next install will append
+     a fresh block at the end
+EOF
+}
+
 replace_marked_section() {
   local file="$1"
   local begin="$2"
   local end="$3"
   local block="$4"
-  local tmp
+  local tmp err status
   tmp="$(mktemp)"
-  if ! awk -v begin="$begin" -v end="$end" -v block="$block" '
+  err="$(mktemp)"
+  # macOS awk rejects newlines in -v strings. Pass the block through ENVIRON.
+  if ! PSTACK_BLOCK="$block" awk -v begin="$begin" -v end="$end" '
     $0 == begin {
-      if (in_block) { missing_end = 1 }
-      print block
+      if (in_block) { extra_begin = 1 }
+      printf "%s", ENVIRON["PSTACK_BLOCK"]
+      if (ENVIRON["PSTACK_BLOCK"] != "" && ENVIRON["PSTACK_BLOCK"] !~ /\n$/) {
+        printf "\n"
+      }
       in_block = 1
       found_begin = 1
       next
@@ -731,15 +771,24 @@ replace_marked_section() {
         print "unclosed pstack marker section" > "/dev/stderr"
         exit 2
       }
-      if (extra_end) {
-        print "unmatched pstack end marker" > "/dev/stderr"
+      if (extra_end || extra_begin) {
+        print "unmatched pstack marker" > "/dev/stderr"
         exit 2
       }
     }
-  ' "$file" >"$tmp"; then
+  ' "$file" >"$tmp" 2>"$err"; then
+    status=$?
     rm -f "$tmp"
-    die "refusing to edit $file: pstack markers are unbalanced"
+    if grep -q 'newline in string' "$err" 2>/dev/null; then
+      rm -f "$err"
+      die "failed to rewrite ${file}: this awk cannot take a multi-line pstack block. Update pstack-project.sh (ENVIRON pass)."
+    fi
+    cat "$err" >&2 || true
+    rm -f "$err"
+    explain_markers "$file" "$begin" "$end"
+    die "refusing to edit ${file}: pstack markers are unbalanced (awk exit ${status})"
   fi
+  rm -f "$err"
   write_through "$file" "$tmp"
 }
 
@@ -775,7 +824,8 @@ upsert_marked_section() {
     return 0
   fi
   if [[ "$begins" -ne "$ends" || "$begins" -eq 0 ]]; then
-    die "refusing to edit $file: begin/end pstack markers are unbalanced (begin=$begins end=$ends). Markers must be exact whole lines."
+    explain_markers "$file" "$begin" "$end" "$begins" "$ends"
+    die "refusing to edit ${file}: begin/end pstack markers are unbalanced (begin=${begins} end=${ends})"
   fi
   replace_marked_section "$file" "$begin" "$end" "$block"
   log "patch $(relpath "$file") (pstack section updated)"
@@ -795,7 +845,8 @@ strip_marked_section() {
     return 0
   fi
   if [[ "$begins" -ne "$ends" ]]; then
-    die "refusing to edit $file: begin/end pstack markers are unbalanced (begin=$begins end=$ends)"
+    explain_markers "$file" "$begin" "$end" "$begins" "$ends"
+    die "refusing to edit ${file}: begin/end pstack markers are unbalanced (begin=${begins} end=${ends})"
   fi
   replace_marked_section "$file" "$begin" "$end" ""
   log "patch $(relpath "$file") (pstack section removed)"
