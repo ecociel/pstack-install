@@ -2,8 +2,6 @@
 
 Project-local install, update, and uninstall of [pstack](https://github.com/cursor/plugins/tree/main/pstack) (Lauren Tan / @poteto) for **Claude Code** and **Grok Build**.
 
-GitHub gists cannot live under an organization, so this public repo is the org copy. A public gist of the same script is also published from the maintainer account.
-
 ## Use
 
 From the repository you want pstack in:
