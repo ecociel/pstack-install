@@ -514,27 +514,28 @@ install_skills() {
   shopt -u nullglob
 }
 
-models_md_body() {
+models_md_body_claude() {
   cat <<'EOF'
 # pstack-managed: true
 # pstack-managed-id: ecociel-pstack-project
-# pstack model configuration (project). One line per role.
+# pstack model configuration for Claude Code. Claude models only.
+# Do not put Grok slugs in this file; use .grok/rules/pstack-models.md
+# and .grok/pstack-models.toml for Grok Build.
 #
 # How to think about this file
 # ----------------------------
-# 1. Pick the parent session model first (Claude Code `/model`, Grok TUI
-#    model picker, or `grok -m`). That is the top-level choice. It sets
-#    cost, latency, and the default brain for anything not pinned below.
+# 1. Pick the parent Claude Code model first (`/model`). That is the
+#    top-level choice. It sets cost, latency, and the default brain for
+#    anything not pinned below.
 # 2. inherit-parent / auto means the child omits its model field and
 #    follows that parent. Use this on remotes and whenever you only have
 #    one usable model. A missing line falls back to the skill default.
-# 3. Pin a role only when it should differ from the parent: cheaper /
-#    faster for mechanical work, stronger for judgment, or a mixed panel.
-# 4. Write only slugs the current host will spawn. Check `grok models`
-#    or Claude Code's Agent model list. Cursor slugs
-#    (grok-4.7-xhigh-fast, claude-opus-5-5-max) belong in Cursor, not here.
+# 3. Pin a role only when it should differ from the parent: Sonnet for
+#    mechanical work, Opus for judgment. Stay inside the Claude family.
+# 4. Write only slugs Claude Code will spawn (`/model` list, Agent tool).
+#    Cursor slugs (claude-opus-5-5-max) belong in Cursor, not here.
 # 5. A comma-separated value is a panel: one child per entry. List
-#    length is fan-out. Repeat a slug only if you want two of the same.
+#    length is fan-out. Both entries must still be Claude models.
 #
 # Role families (Lauren's split, still the right shape)
 # -----------------------------------------------------
@@ -542,12 +543,11 @@ models_md_body() {
 #                          how explorer, why investigators, swarm workers
 # Judgment / prose         judgment and prose, hardest tasks, how explainer,
 #                          why synthesizer, reflect judgment
-# Mixed panels             how critics, arena, architect, interrogate
+# Panels                   how critics, arena, architect, interrogate
 #
 # budget: high
 #
-# Active map: inherit-parent so Claude Code and Grok Build remotes work
-# with whatever the parent session already selected.
+# Active map: inherit-parent so remotes follow the parent session.
 
 feature, refactoring: inherit-parent
 bug-fix: inherit-parent
@@ -568,33 +568,114 @@ swarm workers: inherit-parent
 architect runners: inherit-parent
 interrogate reviewers: inherit-parent
 
-# --- late September 2026 pinned map (commented) ---
-# Opus 5.5 (2026-09-22, id claude-opus-5-5, Claude Code alias `opus`)
-# and Grok 4.7 (2026-09-21, id grok-4.7) just landed. Official pstack
-# still sends mechanical work to Grok and judgment / hardest / prose
-# to Opus. Uncomment this block and comment out the inherit-parent
-# lines above only after `grok models` / Claude Agent lists these slugs.
-# On Claude Code, `opus` is enough if it resolves to 5.5 (v2.1.280+).
-# On a Grok-only parent, drop the opus lines or the spawn will reject them.
+# --- late September 2026 Claude-only pin (commented) ---
+# Opus 5.5 landed 2026-09-22 (id claude-opus-5-5, alias `opus` on
+# Claude Code 2.1.280+). Sonnet 5 is the mechanical default
+# (id claude-sonnet-5, alias `sonnet`). Uncomment this block and
+# comment out the inherit-parent lines above only after `/model`
+# lists these slugs. Do not add grok-4.7 here.
+#
+# feature, refactoring: claude-sonnet-5
+# bug-fix: claude-sonnet-5
+# perf-issue: claude-sonnet-5
+# hillclimb: claude-sonnet-5
+# judgment and prose: claude-opus-5-5
+# hardest tasks: claude-opus-5-5
+# how explorer: claude-sonnet-5
+# how explainer: claude-opus-5-5
+# how critics: claude-opus-5-5, claude-sonnet-5
+# why investigators: claude-sonnet-5
+# why synthesizer: claude-opus-5-5
+# reflect tooling: claude-sonnet-5
+# reflect judgment, divergent, synthesizer: claude-opus-5-5
+# arena runners: claude-opus-5-5, claude-sonnet-5
+# arena cross-judge pool: claude-opus-5-5, claude-sonnet-5
+# swarm workers: claude-sonnet-5
+# architect runners: claude-opus-5-5, claude-sonnet-5
+# interrogate reviewers: claude-opus-5-5, claude-sonnet-5
+EOF
+}
+
+models_md_body_grok() {
+  cat <<'EOF'
+# pstack-managed: true
+# pstack-managed-id: ecociel-pstack-project
+# pstack model configuration for Grok Build. Grok models only.
+# Do not put Claude slugs in this file; use .agents/pstack-models.md
+# for Claude Code.
+#
+# How to think about this file
+# ----------------------------
+# 1. Pick the parent Grok session model first (TUI picker or `grok -m`).
+#    That is the top-level choice. Late September 2026 that is usually
+#    grok-4.7, now the Grok Build default.
+# 2. inherit-parent / auto means the child omits spawn_subagent.model
+#    and follows that parent. Use this on remotes and when every role
+#    should use the same Grok model.
+# 3. Pin a role only when it must not follow the parent. Stay inside
+#    the Grok family. Grok cannot spawn Opus from this file.
+# 4. Write only slugs `grok models` lists. Cursor slugs
+#    (grok-4.7-xhigh-fast) belong in Cursor, not here.
+# 5. A comma-separated value is a panel: one child per entry. On a
+#    Grok-only host every entry is still a Grok slug. Diversity on
+#    judgment vs mechanical is effort, not a second vendor.
+#
+# Role families (Lauren's split, still the right shape)
+# -----------------------------------------------------
+# Mechanical / throughput  feature, refactoring, bug-fix, perf, hillclimb,
+#                          how explorer, why investigators, swarm workers
+# Judgment / prose         judgment and prose, hardest tasks, how explainer,
+#                          why synthesizer, reflect judgment
+# Panels                   how critics, arena, architect, interrogate
+#
+# budget: high
+#
+# Active map: inherit-parent so remotes follow the parent session.
+
+feature, refactoring: inherit-parent
+bug-fix: inherit-parent
+perf-issue: inherit-parent
+hillclimb: inherit-parent
+judgment and prose: inherit-parent
+hardest tasks: inherit-parent
+how explorer: inherit-parent
+how explainer: inherit-parent
+how critics: inherit-parent
+why investigators: inherit-parent
+why synthesizer: inherit-parent
+reflect tooling: inherit-parent
+reflect judgment, divergent, synthesizer: inherit-parent
+arena runners: inherit-parent
+arena cross-judge pool: inherit-parent
+swarm workers: inherit-parent
+architect runners: inherit-parent
+interrogate reviewers: inherit-parent
+
+# --- late September 2026 Grok-only pin (commented) ---
+# Grok 4.7 landed 2026-09-21 (id grok-4.7). Uncomment this block and
+# comment out the inherit-parent lines above to pin every child to
+# 4.7 even if the parent is an older slug. Do not add
+# claude-opus-5-5 here. Raise effort on judgment roles instead of
+# mixing vendors.
 #
 # feature, refactoring: grok-4.7
 # bug-fix: grok-4.7
 # perf-issue: grok-4.7
 # hillclimb: grok-4.7
-# judgment and prose: claude-opus-5-5
-# hardest tasks: claude-opus-5-5
+# judgment and prose: grok-4.7
+# hardest tasks: grok-4.7
 # how explorer: grok-4.7
-# how explainer: claude-opus-5-5
-# how critics: claude-opus-5-5, grok-4.7
+# how explainer: grok-4.7
+# how critics: grok-4.7
 # why investigators: grok-4.7
-# why synthesizer: claude-opus-5-5
+# why synthesizer: grok-4.7
 # reflect tooling: grok-4.7
-# reflect judgment, divergent, synthesizer: claude-opus-5-5
-# arena runners: claude-opus-5-5, grok-4.7
-# arena cross-judge pool: claude-opus-5-5, grok-4.7
+# reflect judgment, divergent, synthesizer: grok-4.7
+# arena runners: grok-4.7
+# arena cross-judge pool: grok-4.7
 # swarm workers: grok-4.7
-# architect runners: claude-opus-5-5, grok-4.7
-# interrogate reviewers: claude-opus-5-5, grok-4.7
+# architect runners: grok-4.7
+# interrogate reviewers: grok-4.7
 EOF
 }
 
@@ -610,10 +691,8 @@ models_toml_body() {
 # 1. The parent `grok` session model is the top-level choice. Set it in
 #    the TUI or with `grok -m`. As of late September 2026 that should
 #    usually be grok-4.7 (now the Grok Build default).
-# 2. This file cannot spawn Claude. Opus 5.5 belongs in
-#    .agents/pstack-models.md when the parent is Claude Code, or as a
-#    custom [model.*] entry in ~/.grok/config.toml if you have wired an
-#    Anthropic endpoint into Grok.
+# 2. This file is Grok-only. Claude pins live in
+#    .agents/pstack-models.md. Do not put claude-opus-5-5 here.
 # 3. Pin a key only when that pstack role should not follow the parent.
 #    On a grok-4.7 parent, inherit-parent is already the 4.7 map.
 # 4. Arrays are panels (one child per entry). Effort is not a model;
@@ -639,14 +718,11 @@ swarm-workers = "inherit-parent"
 architect-runners = ["inherit-parent"]
 interrogate-reviewers = ["inherit-parent"]
 
-# --- late September 2026 pinned map (commented) ---
-# Grok 4.7 landed 2026-09-21 (id grok-4.7). Use this when the parent is
-# an older slug and you want every pstack child on 4.7, or when you
-# want the pin explicit. Mechanical and judgment are the same slug
-# here; raise effort on judgment roles instead of inventing a second
-# Grok model. For an Opus/Grok panel, use the markdown sheet under
-# Claude Code — do not put claude-opus-5-5 in this toml unless Grok
-# lists that slug.
+# --- late September 2026 Grok-only pin (commented) ---
+# Grok 4.7 landed 2026-09-21 (id grok-4.7). Uncomment this block and
+# comment out the inherit-parent lines above to pin every child to
+# 4.7 even if the parent is an older slug. Raise effort on judgment
+# roles instead of mixing vendors. Do not add claude-opus-5-5 here.
 #
 # feature = "grok-4.7"
 # refactoring = "grok-4.7"
@@ -674,11 +750,9 @@ instruction_block() {
 ${MARKER_BEGIN}
 pstack is installed in this repository (project scope).
 Skills live in \`.agents/skills/\` and are also linked from \`.claude/skills/\` and \`.grok/skills/\`.
-Model config (edit this): \`.agents/pstack-models.md\`
-Grok copies: \`.grok/rules/pstack-models.md\` and \`.grok/pstack-models.toml\`
-If the project model file exists, use it for every pstack role. Do not prefer
-\`~/.claude/pstack-models.md\`, \`~/.agents/pstack-models.md\`, or
-\`~/.grok/rules/pstack-models.md\` over the project file.
+Model config for Claude Code (edit this): \`.agents/pstack-models.md\`
+Model config for Grok Build: \`.grok/rules/pstack-models.md\` and \`.grok/pstack-models.toml\`
+Do not mix vendors in one sheet. Project files win over home-directory sheets.
 Use poteto-mode / /poteto-mode for non-trivial engineering work.
 Do not delete generated verification skills (\`verify-*\` other than \`verify-commands\`).
 ${MARKER_END}
@@ -690,9 +764,11 @@ grok_rule_body() {
 ${GROK_MARKER_BEGIN}
 # pstack-managed-id: ${MANAGED_ID}
 
-Read \`.grok/rules/pstack-models.md\` and \`.agents/pstack-models.md\` before
-any spawn_subagent. Project files win over ~/.grok/rules/pstack-models.md
-and ~/.grok/pstack-models.toml.
+Read \`.grok/rules/pstack-models.md\` before any spawn_subagent.
+That file is Grok-only. Do not apply Claude slugs from
+\`.agents/pstack-models.md\` on Grok Build.
+Project Grok files win over ~/.grok/rules/pstack-models.md and
+~/.grok/pstack-models.toml.
 If a role is inherit-parent or auto, omit the model field.
 ${GROK_MARKER_END}
 EOF
@@ -853,8 +929,8 @@ strip_marked_section() {
 }
 
 write_models() {
-  models_md_body | write_owned_file "$MODELS_MD" skip-if-exists
-  models_md_body | write_owned_file "$MODELS_GROK_MD" skip-if-exists
+  models_md_body_claude | write_owned_file "$MODELS_MD" skip-if-exists
+  models_md_body_grok | write_owned_file "$MODELS_GROK_MD" skip-if-exists
   models_toml_body | write_owned_file "$MODELS_GROK_TOML" skip-if-exists
 }
 
@@ -896,10 +972,9 @@ Grok-specific copies (kept in sync only on first write; later edits stay):
   ${MODELS_GROK_TOML}
 
 The generated sheet uses inherit-parent so Claude Code and Grok Build remotes
-work with whatever model the parent session already has. Each file includes a
-commented late-September 2026 pin (grok-4.7 / claude-opus-5-5). Existing model
-files are not overwritten; copy the comments from a fresh install or from
-this script if you already have a sheet.
+work with whatever model the parent session already has. Each file includes a commented late-September 2026 pin for that host
+only (Claude: claude-sonnet-5 / claude-opus-5-5; Grok: grok-4.7).
+Existing model files are not overwritten.
 EOF
 }
 
