@@ -3,10 +3,9 @@
 # for Claude Code and Grok Build (project scope, remote-safe).
 #
 # Usage:
-#   ./pstack-project.sh install
-#   ./pstack-project.sh update
-#   ./pstack-project.sh uninstall
-#   ./pstack-project.sh uninstall --purge-config
+#   ./pstack-project.sh install [--force] [--dry-run]
+#   ./pstack-project.sh update [--force] [--dry-run]
+#   ./pstack-project.sh uninstall [--purge-config] [--force] [--dry-run]
 #
 # Env:
 #   PSTACK_REPO   git URL (default: https://github.com/mdsmithaustin/pstack.git)
@@ -17,13 +16,43 @@
 
 set -euo pipefail
 
-ROOT="$(pwd)"
-ACTION="${1:-}"
-PURGE_CONFIG=0
-if [[ "${2:-}" == "--purge-config" ]]; then
-  PURGE_CONFIG=1
-fi
+usage() {
+  cat <<'EOF'
+Usage: pstack-project.sh <install|update|uninstall> [options]
 
+install     Vendor pstack skills into this repo and write model config if missing
+update      Refresh owned pstack skills from upstream; keep model config and verify-*
+uninstall   Remove owned pstack files only; keep verify-* and (unless --purge-config) model config
+
+Options:
+  --force          Allow a cwd that is not the git toplevel
+  --dry-run        Print destructive actions; change nothing
+  --purge-config   On uninstall, delete managed model sheets
+EOF
+}
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+ACTION=""
+PURGE_CONFIG=0
+FORCE=0
+DRY_RUN=0
+for arg in "$@"; do
+  case "$arg" in
+    install|update|uninstall)
+      [[ -z "$ACTION" ]] || die "multiple actions"
+      ACTION="$arg"
+      ;;
+    --purge-config) PURGE_CONFIG=1 ;;
+    --force) FORCE=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) usage; die "unknown argument: $arg" ;;
+  esac
+done
+[[ -n "$ACTION" ]] || { usage; exit 1; }
+
+ROOT="$(pwd)"
 PSTACK_REPO="${PSTACK_REPO:-https://github.com/mdsmithaustin/pstack.git}"
 PSTACK_REF="${PSTACK_REF:-main}"
 PSTACK_SKILLS="${PSTACK_SKILLS:-skills}"
@@ -49,8 +78,8 @@ MODELS_GROK_TOML="${ROOT}/.grok/pstack-models.toml"
 GROK_RULE="${ROOT}/.grok/rules/pstack.md"
 CLAUDE_MD="${ROOT}/CLAUDE.md"
 AGENTS_MD="${ROOT}/AGENTS.md"
+GITIGNORE="${ROOT}/.gitignore"
 
-# Core pstack skill names. Generated project verifiers (verify-*) are never listed.
 PSTACK_SKILLS_ALLOW='
 architect
 arena
@@ -85,16 +114,46 @@ verify-commands
 why
 '
 
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+relpath() {
+  local path="$1"
+  path="${path#"$ROOT"/}"
+  path="${path#"$ROOT"}"
+  printf '%s\n' "$path"
+}
 
-usage() {
-  cat <<'EOF'
-Usage: pstack-project.sh <install|update|uninstall> [--purge-config]
+abspath() {
+  python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
 
-install     Vendor pstack skills into this repo and write model config if missing
-update      Refresh owned pstack skills from upstream; keep model config and verify-*
-uninstall   Remove owned pstack files only; keep verify-* and (unless --purge-config) model config
-EOF
+exists_any() {
+  [[ -e "$1" || -L "$1" ]]
+}
+
+is_inside_root() {
+  local resolved="$1"
+  local root_res="$2"
+  [[ "$resolved" == "$root_res" || "$resolved" == "$root_res"/* ]]
+}
+
+assert_under_root() {
+  local path="$1"
+  exists_any "$path" || return 0
+  local resolved root_res
+  resolved="$(abspath "$path")"
+  root_res="$(abspath "$ROOT")"
+  is_inside_root "$resolved" "$root_res" \
+    || die "refusing path outside the project: $path -> $resolved"
+}
+
+log() { printf '%s\n' "$*"; }
+
+run_rm() {
+  # Usage: run_rm [-f|-rf] path
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'dry-run rm %s\n' "$*"
+    return 0
+  fi
+  rm "$@"
 }
 
 is_verify_skill() {
@@ -110,33 +169,82 @@ is_allowlisted_skill() {
   if [[ "$name" == principle-* ]]; then
     return 0
   fi
-  printf '%s' "$PSTACK_SKILLS_ALLOW" | grep -qx "$name"
+  printf '%s\n' "$PSTACK_SKILLS_ALLOW" | grep -Fxq "$name"
 }
 
-is_owned_path() {
-  local path="$1"
-  [[ -f "$path/$OWNED_STAMP" ]] && return 0
-  if [[ -f "$MANIFEST" ]] && grep -Fqx "$path" "$MANIFEST" 2>/dev/null; then
-    return 0
-  fi
-  return 1
+stamp_matches() {
+  local dir="$1"
+  [[ -f "$dir/$OWNED_STAMP" ]] || return 1
+  grep -Fxq "pstack-managed-id: ${MANAGED_ID}" "$dir/$OWNED_STAMP"
 }
 
 is_managed_file() {
   local path="$1"
-  [[ -f "$path" ]] || return 1
-  grep -q "pstack-managed-id: ${MANAGED_ID}" "$path" 2>/dev/null
+  [[ -f "$path" || -L "$path" ]] || return 1
+  grep -Fxq "pstack-managed-id: ${MANAGED_ID}" "$path" \
+    || grep -Fxq "# pstack-managed-id: ${MANAGED_ID}" "$path"
+}
+
+canonical_agents_skill() {
+  printf '%s\n' "${AGENTS_SKILLS}/$1"
+}
+
+is_owned_symlink() {
+  local path="$1"
+  local name
+  name="$(basename "$path")"
+  [[ -L "$path" ]] || return 1
+  is_allowlisted_skill "$name" || return 1
+  is_verify_skill "$name" && return 1
+  local want resolved
+  want="$(abspath "$(canonical_agents_skill "$name")")"
+  resolved="$(abspath "$path")"
+  [[ "$resolved" == "$want" ]] || return 1
+  stamp_matches "$(canonical_agents_skill "$name")"
+}
+
+is_owned_skill_dir() {
+  local path="$1"
+  local name
+  name="$(basename "$path")"
+  [[ -d "$path" && ! -L "$path" ]] || return 1
+  is_allowlisted_skill "$name" || return 1
+  stamp_matches "$path"
 }
 
 ensure_dir() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    [[ -d "$1" ]] || printf 'dry-run mkdir %s\n' "$(relpath "$1")"
+    return 0
+  fi
   mkdir -p "$1"
 }
 
 record() {
   local rel="$1"
+  rel="${rel#./}"
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
   ensure_dir "$(dirname "$MANIFEST")"
   touch "$MANIFEST"
   grep -Fqx "$rel" "$MANIFEST" 2>/dev/null || printf '%s\n' "$rel" >>"$MANIFEST"
+}
+
+write_through() {
+  local dest="$1"
+  local tmp="$2"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'dry-run write %s\n' "$(relpath "$dest")"
+    rm -f "$tmp"
+    return 0
+  fi
+  if exists_any "$dest"; then
+    cat "$tmp" >"$dest"
+  else
+    ensure_dir "$(dirname "$dest")"
+    cat "$tmp" >"$dest"
+    chmod 644 "$dest" 2>/dev/null || true
+  fi
+  rm -f "$tmp"
 }
 
 write_owned_file() {
@@ -145,29 +253,91 @@ write_owned_file() {
   local tmp
   tmp="$(mktemp)"
   cat >"$tmp"
-  if [[ -e "$dest" ]]; then
+  if exists_any "$dest"; then
     if is_managed_file "$dest" || [[ "$mode" == "force-owned" ]]; then
       :
     elif [[ "$mode" == "skip-if-exists" ]]; then
       rm -f "$tmp"
-      printf 'keep  %s (already exists; not overwritten)\n' "${dest#"$ROOT"/}"
+      log "keep  $(relpath "$dest") (already exists; not overwritten)"
       return 0
     else
       rm -f "$tmp"
-      printf 'skip  %s (exists and is not a pstack-managed file)\n' "${dest#"$ROOT"/}"
+      log "skip  $(relpath "$dest") (exists and is not a pstack-managed file)"
       return 0
     fi
   fi
-  ensure_dir "$(dirname "$dest")"
-  mv "$tmp" "$dest"
-  record "${dest#"$ROOT"/}"
-  printf 'write %s\n' "${dest#"$ROOT"/}"
+  write_through "$dest" "$tmp"
+  record "$(relpath "$dest")"
+  log "write $(relpath "$dest")"
 }
 
 stamp_dir() {
   local dest="$1"
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
   printf 'pstack-managed-id: %s\n' "$MANAGED_ID" >"${dest}/${OWNED_STAMP}"
-  record "${dest#"$ROOT"/}/${OWNED_STAMP}"
+  record "$(relpath "${dest}/${OWNED_STAMP}")"
+}
+
+guard_cwd() {
+  local root_res home_res
+  root_res="$(abspath "$ROOT")"
+  home_res="$(abspath "${HOME:-/no-such-home}")"
+  if [[ "$root_res" == "/" ]]; then
+    die "refusing to run in /"
+  fi
+  if [[ "$root_res" == "$home_res" && "$FORCE" -eq 0 ]]; then
+    die "refusing to run in \$HOME (pass --force to override)"
+  fi
+  if [[ "$FORCE" -eq 0 ]]; then
+    command -v git >/dev/null 2>&1 || die "git is required"
+    local top
+    top="$(git rev-parse --show-toplevel 2>/dev/null)" \
+      || die "cwd is not a git repository (pass --force to override)"
+    top="$(abspath "$top")"
+    [[ "$top" == "$root_res" ]] \
+      || die "cwd is not the git toplevel ($top); pass --force to override"
+  fi
+}
+
+guard_skill_layout() {
+  local root_res
+  root_res="$(abspath "$ROOT")"
+  local -a resolved=()
+  local -a labels=()
+  local p r
+  for p in "$AGENTS_SKILLS" "$CLAUDE_SKILLS" "$GROK_SKILLS"; do
+    exists_any "$p" || continue
+    r="$(abspath "$p")"
+    is_inside_root "$r" "$root_res" \
+      || die "$(relpath "$p") resolves outside the project: $r"
+    resolved+=("$r")
+    labels+=("$(relpath "$p")")
+  done
+  local i j
+  for ((i = 0; i < ${#resolved[@]}; i++)); do
+    for ((j = i + 1; j < ${#resolved[@]}; j++)); do
+      if [[ "${resolved[$i]}" == "${resolved[$j]}" ]]; then
+        log "note  ${labels[$i]} and ${labels[$j]} resolve to the same folder; links between them will be skipped"
+      fi
+    done
+  done
+}
+
+same_resolved() {
+  local a="$1" b="$2"
+  exists_any "$a" || return 1
+  exists_any "$b" || return 1
+  [[ "$(abspath "$a")" == "$(abspath "$b")" ]]
+}
+
+relative_skill_link() {
+  local dest_dir="$1"
+  local name="$2"
+  python3 -c '
+import os, sys
+dest_dir, name, target = sys.argv[1], sys.argv[2], sys.argv[3]
+print(os.path.relpath(os.path.join(target, name), dest_dir))
+' "$dest_dir" "$name" "$AGENTS_SKILLS"
 }
 
 install_skill_dir() {
@@ -177,43 +347,40 @@ install_skill_dir() {
   name="$(basename "$dest")"
 
   if is_verify_skill "$name"; then
-    printf 'keep  %s (generated verification skill)\n' "${dest#"$ROOT"/}"
+    log "keep  $(relpath "$dest") (generated verification skill)"
     return 0
   fi
 
-  if [[ -e "$dest" || -L "$dest" ]]; then
+  if exists_any "$dest"; then
     if [[ -L "$dest" ]]; then
-      local target
-      target="$(readlink "$dest" || true)"
-      case "$target" in
-        */.pstack/*|*/.agents/skills/"$name")
-          rm -f "$dest"
-          ;;
-        *)
-          printf 'skip  %s (symlink not owned by this installer)\n' "${dest#"$ROOT"/}"
-          return 0
-          ;;
-      esac
-    elif is_owned_path "$dest"; then
-      rm -rf "$dest"
+      if is_owned_symlink "$dest"; then
+        run_rm -f "$dest"
+      else
+        log "skip  $(relpath "$dest") (symlink not owned by this installer)"
+        return 0
+      fi
+    elif is_owned_skill_dir "$dest"; then
+      :
     else
-      printf 'skip  %s (exists and is not a pstack-owned skill)\n' "${dest#"$ROOT"/}"
+      log "skip  $(relpath "$dest") (exists and is not a pstack-owned skill)"
       return 0
     fi
   fi
 
-  ensure_dir "$(dirname "$dest")"
-  mkdir -p "$dest"
-  # Copy contents, not a wrapping extra directory.
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "dry-run skill $(relpath "$dest")"
+    return 0
+  fi
+
+  ensure_dir "$dest"
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete --exclude "$OWNED_STAMP" "$src"/ "$dest"/
+    rsync -a --exclude "$OWNED_STAMP" --exclude "MY-NOTES.md" "$src"/ "$dest"/
   else
-    find "$dest" -mindepth 1 -maxdepth 1 ! -name "$OWNED_STAMP" -exec rm -rf {} +
     cp -R "$src"/. "$dest"/
   fi
   stamp_dir "$dest"
-  record "${dest#"$ROOT"/}"
-  printf 'skill %s\n' "${dest#"$ROOT"/}"
+  record "$(relpath "$dest")"
+  log "skill $(relpath "$dest")"
 }
 
 link_or_copy_skill() {
@@ -224,45 +391,70 @@ link_or_copy_skill() {
   if is_verify_skill "$name"; then
     return 0
   fi
-  if [[ -e "$dest" || -L "$dest" ]]; then
+  if same_resolved "$(dirname "$dest")" "$(dirname "$src")"; then
+    log "skip  $(relpath "$dest") (same folder as $(relpath "$src"))"
+    return 0
+  fi
+  if exists_any "$dest"; then
     if [[ -L "$dest" ]]; then
-      rm -f "$dest"
-    elif is_owned_path "$dest"; then
-      rm -rf "$dest"
+      if is_owned_symlink "$dest"; then
+        run_rm -f "$dest"
+      else
+        log "skip  $(relpath "$dest") (symlink not owned by this installer)"
+        return 0
+      fi
+    elif is_owned_skill_dir "$dest"; then
+      run_rm -rf "$dest"
     else
-      printf 'skip  %s (exists and is not a pstack-owned skill)\n' "${dest#"$ROOT"/}"
+      log "skip  $(relpath "$dest") (exists and is not a pstack-owned skill)"
       return 0
     fi
   fi
   ensure_dir "$(dirname "$dest")"
-  if ln -s "$src" "$dest" 2>/dev/null; then
-    record "${dest#"$ROOT"/}"
-    printf 'link  %s -> %s\n' "${dest#"$ROOT"/}" "${src#"$ROOT"/}"
+  local rel
+  rel="$(relative_skill_link "$(dirname "$dest")" "$name")"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "dry-run link $(relpath "$dest") -> $rel"
+    return 0
+  fi
+  if ln -s "$rel" "$dest" 2>/dev/null; then
+    record "$(relpath "$dest")"
+    log "link  $(relpath "$dest") -> $rel"
   else
     install_skill_dir "$src" "$dest"
   fi
 }
 
 fetch_upstream() {
+  command -v git >/dev/null 2>&1 || die "git is required"
   ensure_dir "$PSTACK_DIR"
   if [[ -d "${SRC_DIR}/.git" ]]; then
-    git -C "$SRC_DIR" fetch --depth 1 origin "$PSTACK_REF"
-    git -C "$SRC_DIR" checkout --force "FETCH_HEAD"
+    git -C "$SRC_DIR" remote set-url origin "$PSTACK_REPO"
+    git -C "$SRC_DIR" fetch --depth 1 origin "$PSTACK_REF" \
+      || die "cannot fetch $PSTACK_REF from $PSTACK_REPO"
+    git -C "$SRC_DIR" checkout --force --quiet FETCH_HEAD \
+      || die "cannot checkout $PSTACK_REF"
   else
-    rm -rf "$SRC_DIR"
-    git clone --depth 1 --branch "$PSTACK_REF" "$PSTACK_REPO" "$SRC_DIR" \
-      || git clone --depth 1 "$PSTACK_REPO" "$SRC_DIR"
-    if [[ -n "$PSTACK_REF" ]]; then
-      git -C "$SRC_DIR" fetch --depth 1 origin "$PSTACK_REF" 2>/dev/null || true
-      git -C "$SRC_DIR" checkout --force "$PSTACK_REF" 2>/dev/null \
-        || git -C "$SRC_DIR" checkout --force "FETCH_HEAD" 2>/dev/null \
-        || true
+    if exists_any "$SRC_DIR"; then
+      die "$SRC_DIR exists and is not a git clone of pstack"
+    fi
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "dry-run clone $PSTACK_REPO@$PSTACK_REF"
+      return 0
+    fi
+    if ! git clone --depth 1 --branch "$PSTACK_REF" "$PSTACK_REPO" "$SRC_DIR" 2>/dev/null; then
+      git clone --depth 1 "$PSTACK_REPO" "$SRC_DIR" \
+        || die "cannot clone $PSTACK_REPO"
+      git -C "$SRC_DIR" fetch --depth 1 origin "$PSTACK_REF" \
+        || die "cannot fetch $PSTACK_REF from $PSTACK_REPO"
+      git -C "$SRC_DIR" checkout --force --quiet FETCH_HEAD \
+        || die "cannot checkout $PSTACK_REF"
     fi
   fi
   local rev
   rev="$(git -C "$SRC_DIR" rev-parse HEAD)"
   printf '%s\n' "$rev" >"${PSTACK_DIR}/revision"
-  printf 'source %s@%s (%s)\n' "$PSTACK_REPO" "$PSTACK_REF" "$rev"
+  log "source $PSTACK_REPO@$PSTACK_REF ($rev)"
 }
 
 skills_src() {
@@ -288,6 +480,7 @@ install_skills() {
   record ".claude/skills"
   record ".grok/skills"
 
+  local -A seen=()
   shopt -s nullglob
   for src in "$src_root"/*/; do
     skill="$(basename "$src")"
@@ -295,13 +488,28 @@ install_skills() {
       continue
     fi
     if ! is_allowlisted_skill "$skill"; then
-      printf 'skip  upstream skill %s (not a known pstack skill)\n' "$skill"
+      log "skip  upstream skill $skill (not a known pstack skill)"
       continue
     fi
+    seen["$skill"]=1
     dest="${AGENTS_SKILLS}/${skill}"
     install_skill_dir "$src" "$dest"
     link_or_copy_skill "$dest" "${CLAUDE_SKILLS}/${skill}"
     link_or_copy_skill "$dest" "${GROK_SKILLS}/${skill}"
+  done
+  # Drop owned skills that disappeared upstream.
+  for dest in "$AGENTS_SKILLS"/*; do
+    exists_any "$dest" || continue
+    skill="$(basename "$dest")"
+    [[ -n "${seen[$skill]:-}" ]] && continue
+    if is_owned_skill_dir "$dest" || is_owned_symlink "$dest"; then
+      log "drop  $(relpath "$dest") (gone upstream)"
+      if [[ -L "$dest" ]]; then
+        run_rm -f "$dest"
+      else
+        run_rm -rf "$dest"
+      fi
+    fi
   done
   shopt -u nullglob
 }
@@ -394,7 +602,7 @@ EOF
 grok_rule_body() {
   cat <<EOF
 ${GROK_MARKER_BEGIN}
-pstack-managed-id: ${MANAGED_ID}
+# pstack-managed-id: ${MANAGED_ID}
 
 Read \`.grok/rules/pstack-models.md\` and \`.agents/pstack-models.md\` before
 any spawn_subagent. Project files win over ~/.grok/rules/pstack-models.md
@@ -404,50 +612,107 @@ ${GROK_MARKER_END}
 EOF
 }
 
+count_exact_lines() {
+  local file="$1"
+  local line="$2"
+  grep -Fxc "$line" "$file" 2>/dev/null || true
+}
+
+replace_marked_section() {
+  local file="$1"
+  local begin="$2"
+  local end="$3"
+  local block="$4"
+  local tmp
+  tmp="$(mktemp)"
+  if ! awk -v begin="$begin" -v end="$end" -v block="$block" '
+    $0 == begin {
+      if (in_block) { missing_end = 1 }
+      print block
+      in_block = 1
+      found_begin = 1
+      next
+    }
+    $0 == end {
+      if (!in_block) { extra_end = 1 }
+      in_block = 0
+      found_end = 1
+      next
+    }
+    in_block != 1 { print }
+    END {
+      if (in_block || (found_begin && !found_end)) {
+        print "unclosed pstack marker section" > "/dev/stderr"
+        exit 2
+      }
+      if (extra_end) {
+        print "unmatched pstack end marker" > "/dev/stderr"
+        exit 2
+      }
+    }
+  ' "$file" >"$tmp"; then
+    rm -f "$tmp"
+    die "refusing to edit $file: pstack markers are unbalanced"
+  fi
+  write_through "$file" "$tmp"
+}
+
 upsert_marked_section() {
   local file="$1"
   local begin="$2"
   local end="$3"
   local block="$4"
-  ensure_dir "$(dirname "$file")"
-  if [[ ! -f "$file" ]]; then
+  if [[ ! -e "$file" && ! -L "$file" ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "dry-run write $(relpath "$file") (created with pstack section)"
+      return 0
+    fi
+    ensure_dir "$(dirname "$file")"
     printf '%s\n' "$block" >"$file"
-    record "${file#"$ROOT"/}"
-    printf 'write %s (created with pstack section)\n' "${file#"$ROOT"/}"
+    chmod 644 "$file" 2>/dev/null || true
+    record "$(relpath "$file")"
+    log "write $(relpath "$file") (created with pstack section)"
     return 0
   fi
-  if grep -q "$begin" "$file" && grep -q "$end" "$file"; then
-    local tmp
-    tmp="$(mktemp)"
-    awk -v begin="$begin" -v end="$end" -v block="$block" '
-      $0 == begin { print block; skip=1; next }
-      $0 == end { skip=0; next }
-      skip != 1 { print }
-    ' "$file" >"$tmp"
-    mv "$tmp" "$file"
-    printf 'patch %s (pstack section updated)\n' "${file#"$ROOT"/}"
+  local begins ends
+  begins="$(count_exact_lines "$file" "$begin")"
+  ends="$(count_exact_lines "$file" "$end")"
+  begins="${begins:-0}"
+  ends="${ends:-0}"
+  if [[ "$begins" -eq 0 && "$ends" -eq 0 ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "dry-run patch $(relpath "$file") (append pstack section)"
+      return 0
+    fi
+    printf '\n%s\n' "$block" >>"$file"
+    log "patch $(relpath "$file") (pstack section appended)"
     return 0
   fi
-  printf '\n%s\n' "$block" >>"$file"
-  printf 'patch %s (pstack section appended)\n' "${file#"$ROOT"/}"
+  if [[ "$begins" -ne "$ends" || "$begins" -eq 0 ]]; then
+    die "refusing to edit $file: begin/end pstack markers are unbalanced (begin=$begins end=$ends). Markers must be exact whole lines."
+  fi
+  replace_marked_section "$file" "$begin" "$end" "$block"
+  log "patch $(relpath "$file") (pstack section updated)"
 }
 
 strip_marked_section() {
   local file="$1"
   local begin="$2"
   local end="$3"
-  [[ -f "$file" ]] || return 0
-  if grep -q "$begin" "$file" && grep -q "$end" "$file"; then
-    local tmp
-    tmp="$(mktemp)"
-    awk -v begin="$begin" -v end="$end" '
-      $0 == begin { skip=1; next }
-      $0 == end { skip=0; next }
-      skip != 1 { print }
-    ' "$file" >"$tmp"
-    mv "$tmp" "$file"
-    printf 'patch %s (pstack section removed)\n' "${file#"$ROOT"/}"
+  exists_any "$file" || return 0
+  local begins ends
+  begins="$(count_exact_lines "$file" "$begin")"
+  ends="$(count_exact_lines "$file" "$end")"
+  begins="${begins:-0}"
+  ends="${ends:-0}"
+  if [[ "$begins" -eq 0 && "$ends" -eq 0 ]]; then
+    return 0
   fi
+  if [[ "$begins" -ne "$ends" ]]; then
+    die "refusing to edit $file: begin/end pstack markers are unbalanced (begin=$begins end=$ends)"
+  fi
+  replace_marked_section "$file" "$begin" "$end" ""
+  log "patch $(relpath "$file") (pstack section removed)"
 }
 
 write_models() {
@@ -462,7 +727,14 @@ write_instructions() {
   grok_rule_body | write_owned_file "$GROK_RULE" skip-if-foreign
 }
 
+ensure_gitignore() {
+  local block
+  block="$(printf '%s\n%s\n%s\n' "$GROK_MARKER_BEGIN" ".pstack/" "$GROK_MARKER_END")"
+  upsert_marked_section "$GITIGNORE" "$GROK_MARKER_BEGIN" "$GROK_MARKER_END" "$block"
+}
+
 write_state() {
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
   ensure_dir "$PSTACK_DIR"
   cat >"$STATE" <<EOF
 repo=${PSTACK_REPO}
@@ -470,6 +742,10 @@ ref=${PSTACK_REF}
 revision=$(cat "${PSTACK_DIR}/revision" 2>/dev/null || echo unknown)
 installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
+  record ".pstack/state"
+  record ".pstack/revision"
+  record ".pstack/manifest"
+  record ".pstack/src"
 }
 
 print_model_notice() {
@@ -489,86 +765,99 @@ want a real split (fast vs judgment, or a review panel).
 EOF
 }
 
-install_or_update() {
-  command -v git >/dev/null 2>&1 || die "git is required"
-  fetch_upstream
-  : >"$MANIFEST"
-  record ".pstack"
-  record ".pstack/src"
-  record ".pstack/manifest"
-  record ".pstack/state"
-  record ".pstack/revision"
-  install_skills
-  write_models
-  write_instructions
-  write_state
-  print_model_notice
+remove_owned_skill_entry() {
+  local path="$1"
+  local name
+  name="$(basename "$path")"
+  if is_verify_skill "$name"; then
+    log "keep  $(relpath "$path") (generated verification skill)"
+    return 0
+  fi
+  if [[ -L "$path" ]]; then
+    if is_owned_symlink "$path"; then
+      run_rm -f "$path"
+      log "rm    $(relpath "$path")"
+    else
+      log "keep  $(relpath "$path") (symlink not owned)"
+    fi
+    return 0
+  fi
+  if is_owned_skill_dir "$path"; then
+    run_rm -rf "$path"
+    log "rm    $(relpath "$path")"
+    return 0
+  fi
+  log "keep  $(relpath "$path")"
 }
 
 uninstall() {
-  local path name full
   strip_marked_section "$CLAUDE_MD" "$MARKER_BEGIN" "$MARKER_END"
   strip_marked_section "$AGENTS_MD" "$MARKER_BEGIN" "$MARKER_END"
+  strip_marked_section "$GITIGNORE" "$GROK_MARKER_BEGIN" "$GROK_MARKER_END"
 
-  # Remove owned skill directories, but never verify-* (except verify-commands).
+  local base path
   for base in "$AGENTS_SKILLS" "$CLAUDE_SKILLS" "$GROK_SKILLS"; do
-    [[ -d "$base" ]] || continue
+    [[ -d "$base" && ! -L "$base" ]] || continue
+    assert_under_root "$base"
     shopt -s nullglob
     for path in "$base"/*; do
-      name="$(basename "$path")"
-      if is_verify_skill "$name"; then
-        printf 'keep  %s (generated verification skill)\n' "${path#"$ROOT"/}"
-        continue
-      fi
-      if [[ -L "$path" ]]; then
-        rm -f "$path"
-        printf 'rm    %s\n' "${path#"$ROOT"/}"
-        continue
-      fi
-      if is_owned_path "$path" || is_allowlisted_skill "$name"; then
-        if is_owned_path "$path"; then
-          rm -rf "$path"
-          printf 'rm    %s\n' "${path#"$ROOT"/}"
-        else
-          printf 'skip  %s (matches a pstack name but has no ownership stamp)\n' "${path#"$ROOT"/}"
-        fi
-      fi
+      remove_owned_skill_entry "$path"
     done
     shopt -u nullglob
   done
 
   if [[ "$PURGE_CONFIG" -eq 1 ]]; then
+    local full
     for full in "$MODELS_MD" "$MODELS_GROK_MD" "$MODELS_GROK_TOML" "$GROK_RULE"; do
-      if [[ -f "$full" ]] && is_managed_file "$full"; then
-        rm -f "$full"
-        printf 'rm    %s\n' "${full#"$ROOT"/}"
-      elif [[ -f "$full" ]]; then
-        printf 'skip  %s (not pstack-managed; not deleted)\n' "${full#"$ROOT"/}"
+      if exists_any "$full" && is_managed_file "$full"; then
+        run_rm -f "$full"
+        log "rm    $(relpath "$full")"
+      elif exists_any "$full"; then
+        log "skip  $(relpath "$full") (not pstack-managed; not deleted)"
       fi
     done
   else
-    printf 'keep  model config (pass --purge-config to delete managed sheets)\n'
+    log "keep  model config (pass --purge-config to delete managed sheets)"
   fi
 
-  if [[ -d "$PSTACK_DIR" ]]; then
-    rm -rf "$PSTACK_DIR"
-    printf 'rm    .pstack\n'
+  if [[ -d "$PSTACK_DIR" && ! -L "$PSTACK_DIR" ]]; then
+    assert_under_root "$PSTACK_DIR"
+    local child
+    for child in src manifest state revision; do
+      if exists_any "${PSTACK_DIR}/${child}"; then
+        if [[ -d "${PSTACK_DIR}/${child}" && ! -L "${PSTACK_DIR}/${child}" ]]; then
+          run_rm -rf "${PSTACK_DIR}/${child}"
+        else
+          run_rm -f "${PSTACK_DIR}/${child}"
+        fi
+        log "rm    .pstack/${child}"
+      fi
+    done
+    if [[ "$DRY_RUN" -eq 0 ]] && [[ -d "$PSTACK_DIR" ]] && [[ -z "$(ls -A "$PSTACK_DIR" 2>/dev/null || true)" ]]; then
+      rmdir "$PSTACK_DIR"
+      log "rm    .pstack"
+    elif [[ -d "$PSTACK_DIR" ]]; then
+      log "keep  .pstack (contains files this installer does not own)"
+    fi
   fi
 }
 
+install_or_update() {
+  fetch_upstream
+  [[ "$DRY_RUN" -eq 1 ]] && { print_model_notice; return 0; }
+  : >"$MANIFEST"
+  install_skills
+  write_models
+  write_instructions
+  ensure_gitignore
+  write_state
+  print_model_notice
+}
+
+guard_cwd
+guard_skill_layout
+
 case "$ACTION" in
-  install|update)
-    install_or_update
-    ;;
-  uninstall)
-    uninstall
-    ;;
-  -h|--help|help|"")
-    usage
-    [[ -n "$ACTION" ]] || exit 1
-    ;;
-  *)
-    usage
-    die "unknown action: $ACTION"
-    ;;
+  install|update) install_or_update ;;
+  uninstall) uninstall ;;
 esac
