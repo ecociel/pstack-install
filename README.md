@@ -2,6 +2,10 @@
 
 Project-local install, update, and uninstall of [pstack](https://github.com/cursor/plugins/tree/main/pstack) (Lauren Tan / @poteto) for **Claude Code** and **Grok Build**.
 
+## Caveat
+
+Made with Grok 4.7 and and adversarial review by Opus 5.5 but not battle tested.
+
 ## Use
 
 From the **git toplevel** of the repository you want pstack in:
