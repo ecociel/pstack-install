@@ -39,6 +39,33 @@ chmod +x pstack-project.sh
 
 Do not keep project notes inside a vendored skill folder under a pstack name. A renamed copy (`my-why`) is left alone even if it still has a stamp.
 
+## Per-repo vs a global install
+
+This script never writes under `$HOME`. A global install you already have stays on disk:
+
+```
+~/.claude/skills/poteto-mode
+~/.grok/skills/poteto-mode
+~/.agents/skills/poteto-mode
+~/.claude/pstack-models.md
+~/.agents/pstack-models.md
+~/.grok/rules/pstack-models.md
+~/.grok/pstack-models.toml
+~/.cursor/rules/pstack-models.mdc
+```
+
+It also does not uninstall or upgrade those files. The two copies then compete.
+
+**Skills.** Claude Code and Grok Build load user skills and project skills. After a per-repo install you have two `poteto-mode` trees (and two of every other pstack name). The project copy is the one this repo can version and ship to remotes. The global copy is still visible in a local session. If they differ (different upstream, different `/setup-pstack` edits), the agent may pick either. Safe patterns: keep the global skills and treat the repo as the override; or remove the overlapping names from `~/.claude/skills` and `~/.grok/skills` and leave only the project links. Do not point a project skill folder at your home skills directory — the installer refuses a skill path that resolves outside the repo.
+
+**Model sheets.** Official and ported pstack still look in the home directory unless the skill text or `CLAUDE.md` / `AGENTS.md` says otherwise. This installer writes project sheets and a managed instruction block that says the project file wins. That block is the interference: a local session that used `~/.claude/pstack-models.md` (Opus / Sonnet pins, a Cursor `.mdc`, a Grok toml) should now follow `.agents/pstack-models.md` in this repo, which defaults to `inherit-parent`. The home sheet is not deleted. If the agent ignores the project block, you get the global pins again — including slugs that a remote or the other harness cannot spawn. Edit the project sheet, or delete the managed section from `CLAUDE.md` / `AGENTS.md` if you want the global sheet back.
+
+**Remotes.** Claude Code cloud, Codespaces, and a fresh Grok checkout do not see `$HOME`. Only the committed project files apply there. A global-only install does nothing in those environments; a per-repo install is what makes pstack show up.
+
+**Uninstall.** `./pstack-project.sh uninstall` removes owned project skills and the managed instruction section. It does not restore or remove the global install. After uninstall, local sessions fall back to `~/.claude/skills` and the home model sheet again.
+
+Keep a global install if you want pstack in repos that do not vendor it. Add this per-repo install when the repo must carry its own skills and model policy, especially onto remotes.
+
 ## Model config
 
 After install, edit:
