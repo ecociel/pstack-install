@@ -54,7 +54,7 @@ Grok copies (written once, then left alone):
 .grok/pstack-models.toml
 ```
 
-The generated sheet uses `inherit-parent` so a remote Claude or Grok session keeps working with the parent model. You will probably want to replace those values with slugs from `grok models` or Claude Code's Agent model list.
+The generated sheet uses `inherit-parent` so a remote Claude or Grok session keeps working with the parent model. Each file also contains a **commented** late-September 2026 map (Grok 4.7 for mechanical work, Claude Opus 5.5 for judgment / prose / mixed panels). Uncomment that block only after the host lists those slugs. Read the comments at the top of the file before pinning roles: pick the parent session model first, then override only the roles that should differ.
 
 ## Upstream
 
