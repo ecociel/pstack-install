@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pstack-project.sh — install, update, or uninstall pstack in the current directory
-# for Claude Code and Grok Build (project scope, remote-safe).
+# for Claude Code and Grok Build via .agents / .claude (project scope).
 #
 # Usage:
 #   ./pstack-project.sh install [--force] [--dry-run]
@@ -60,8 +60,8 @@ PSTACK_SKILLS="${PSTACK_SKILLS:-skills}"
 MANAGED_ID="ecociel-pstack-project"
 MARKER_BEGIN="<!-- pstack:managed:begin -->"
 MARKER_END="<!-- pstack:managed:end -->"
-GROK_MARKER_BEGIN="# pstack:managed:begin"
-GROK_MARKER_END="# pstack:managed:end"
+HASH_MARKER_BEGIN="# pstack:managed:begin"
+HASH_MARKER_END="# pstack:managed:end"
 OWNED_STAMP=".pstack-owned"
 
 PSTACK_DIR="${ROOT}/.pstack"
@@ -71,11 +71,7 @@ STATE="${PSTACK_DIR}/state"
 
 AGENTS_SKILLS="${ROOT}/.agents/skills"
 CLAUDE_SKILLS="${ROOT}/.claude/skills"
-GROK_SKILLS="${ROOT}/.grok/skills"
 MODELS_MD="${ROOT}/.agents/pstack-models.md"
-MODELS_GROK_MD="${ROOT}/.grok/rules/pstack-models.md"
-MODELS_GROK_TOML="${ROOT}/.grok/pstack-models.toml"
-GROK_RULE="${ROOT}/.grok/rules/pstack.md"
 CLAUDE_MD="${ROOT}/CLAUDE.md"
 AGENTS_MD="${ROOT}/AGENTS.md"
 GITIGNORE="${ROOT}/.gitignore"
@@ -305,7 +301,7 @@ guard_skill_layout() {
   local -a resolved=()
   local -a labels=()
   local p r
-  for p in "$AGENTS_SKILLS" "$CLAUDE_SKILLS" "$GROK_SKILLS"; do
+  for p in "$AGENTS_SKILLS" "$CLAUDE_SKILLS"; do
     exists_any "$p" || continue
     r="$(abspath "$p")"
     is_inside_root "$r" "$root_res" \
@@ -475,10 +471,8 @@ install_skills() {
   src_root="$(skills_src)"
   ensure_dir "$AGENTS_SKILLS"
   ensure_dir "$CLAUDE_SKILLS"
-  ensure_dir "$GROK_SKILLS"
   record ".agents/skills"
   record ".claude/skills"
-  record ".grok/skills"
 
   local -A seen=()
   shopt -s nullglob
@@ -495,7 +489,6 @@ install_skills() {
     dest="${AGENTS_SKILLS}/${skill}"
     install_skill_dir "$src" "$dest"
     link_or_copy_skill "$dest" "${CLAUDE_SKILLS}/${skill}"
-    link_or_copy_skill "$dest" "${GROK_SKILLS}/${skill}"
   done
   # Drop owned skills that disappeared upstream.
   for dest in "$AGENTS_SKILLS"/*; do
@@ -518,9 +511,9 @@ models_md_body_claude() {
   cat <<'EOF'
 # pstack-managed: true
 # pstack-managed-id: ecociel-pstack-project
-# pstack model configuration for Claude Code. Claude models only.
-# Do not put Grok slugs in this file; use .grok/rules/pstack-models.md
-# and .grok/pstack-models.toml for Grok Build.
+# pstack model configuration. Claude slugs only.
+# Grok Build reads .agents/ and .claude/ in this repo; there is no
+# separate .grok model sheet from this installer.
 #
 # How to think about this file
 # ----------------------------
@@ -596,181 +589,18 @@ interrogate reviewers: inherit-parent
 EOF
 }
 
-models_md_body_grok() {
-  cat <<'EOF'
-# pstack-managed: true
-# pstack-managed-id: ecociel-pstack-project
-# pstack model configuration for Grok Build. Grok models only.
-# Do not put Claude slugs in this file; use .agents/pstack-models.md
-# for Claude Code.
-#
-# How to think about this file
-# ----------------------------
-# 1. Pick the parent Grok session model first (TUI picker or `grok -m`).
-#    That is the top-level choice. Late September 2026 that is usually
-#    grok-4.7, now the Grok Build default.
-# 2. inherit-parent / auto means the child omits spawn_subagent.model
-#    and follows that parent. Use this on remotes and when every role
-#    should use the same Grok model.
-# 3. Pin a role only when it must not follow the parent. Stay inside
-#    the Grok family. Grok cannot spawn Opus from this file.
-# 4. Write only slugs `grok models` lists. Cursor slugs
-#    (grok-4.7-xhigh-fast) belong in Cursor, not here.
-# 5. A comma-separated value is a panel: one child per entry. On a
-#    Grok-only host every entry is still a Grok slug. Diversity on
-#    judgment vs mechanical is effort, not a second vendor.
-#
-# Role families (Lauren's split, still the right shape)
-# -----------------------------------------------------
-# Mechanical / throughput  feature, refactoring, bug-fix, perf, hillclimb,
-#                          how explorer, why investigators, swarm workers
-# Judgment / prose         judgment and prose, hardest tasks, how explainer,
-#                          why synthesizer, reflect judgment
-# Panels                   how critics, arena, architect, interrogate
-#
-# budget: high
-#
-# Active map: inherit-parent so remotes follow the parent session.
-
-feature, refactoring: inherit-parent
-bug-fix: inherit-parent
-perf-issue: inherit-parent
-hillclimb: inherit-parent
-judgment and prose: inherit-parent
-hardest tasks: inherit-parent
-how explorer: inherit-parent
-how explainer: inherit-parent
-how critics: inherit-parent
-why investigators: inherit-parent
-why synthesizer: inherit-parent
-reflect tooling: inherit-parent
-reflect judgment, divergent, synthesizer: inherit-parent
-arena runners: inherit-parent
-arena cross-judge pool: inherit-parent
-swarm workers: inherit-parent
-architect runners: inherit-parent
-interrogate reviewers: inherit-parent
-
-# --- late September 2026 Grok-only pin (commented) ---
-# Grok 4.7 landed 2026-09-21 (id grok-4.7). Uncomment this block and
-# comment out the inherit-parent lines above to pin every child to
-# 4.7 even if the parent is an older slug. Do not add
-# claude-opus-5-5 here. Raise effort on judgment roles instead of
-# mixing vendors.
-#
-# feature, refactoring: grok-4.7
-# bug-fix: grok-4.7
-# perf-issue: grok-4.7
-# hillclimb: grok-4.7
-# judgment and prose: grok-4.7
-# hardest tasks: grok-4.7
-# how explorer: grok-4.7
-# how explainer: grok-4.7
-# how critics: grok-4.7
-# why investigators: grok-4.7
-# why synthesizer: grok-4.7
-# reflect tooling: grok-4.7
-# reflect judgment, divergent, synthesizer: grok-4.7
-# arena runners: grok-4.7
-# arena cross-judge pool: grok-4.7
-# swarm workers: grok-4.7
-# architect runners: grok-4.7
-# interrogate reviewers: grok-4.7
-EOF
-}
-
-models_toml_body() {
-  cat <<'EOF'
-# pstack-managed: true
-# pstack-managed-id: ecociel-pstack-project
-# Grok Build overlay (tommy-ca / spawn_subagent). inherit-parent omits
-# task.model so the child uses the parent Grok session model.
-#
-# How to think about this file
-# ----------------------------
-# 1. The parent `grok` session model is the top-level choice. Set it in
-#    the TUI or with `grok -m`. As of late September 2026 that should
-#    usually be grok-4.7 (now the Grok Build default).
-# 2. This file is Grok-only. Claude pins live in
-#    .agents/pstack-models.md. Do not put claude-opus-5-5 here.
-# 3. Pin a key only when that pstack role should not follow the parent.
-#    On a grok-4.7 parent, inherit-parent is already the 4.7 map.
-# 4. Arrays are panels (one child per entry). Effort is not a model;
-#    put it in ~/.grok/roles/pstack:<role>.toml if you use that port.
-# 5. Confirm slugs with `grok models` before uncommenting.
-
-feature = "inherit-parent"
-refactoring = "inherit-parent"
-bug-fix = "inherit-parent"
-perf-issue = "inherit-parent"
-hillclimb = "inherit-parent"
-judgment-and-prose = "inherit-parent"
-hardest-tasks = "inherit-parent"
-how-explorer = "inherit-parent"
-how-explainer = "inherit-parent"
-how-critics = ["inherit-parent"]
-why-investigators = "inherit-parent"
-why-synthesizer = "inherit-parent"
-reflect-tooling = "inherit-parent"
-arena-runners = ["inherit-parent"]
-arena-cross-judge-pool = ["inherit-parent"]
-swarm-workers = "inherit-parent"
-architect-runners = ["inherit-parent"]
-interrogate-reviewers = ["inherit-parent"]
-
-# --- late September 2026 Grok-only pin (commented) ---
-# Grok 4.7 landed 2026-09-21 (id grok-4.7). Uncomment this block and
-# comment out the inherit-parent lines above to pin every child to
-# 4.7 even if the parent is an older slug. Raise effort on judgment
-# roles instead of mixing vendors. Do not add claude-opus-5-5 here.
-#
-# feature = "grok-4.7"
-# refactoring = "grok-4.7"
-# bug-fix = "grok-4.7"
-# perf-issue = "grok-4.7"
-# hillclimb = "grok-4.7"
-# judgment-and-prose = "grok-4.7"
-# hardest-tasks = "grok-4.7"
-# how-explorer = "grok-4.7"
-# how-explainer = "grok-4.7"
-# how-critics = ["grok-4.7"]
-# why-investigators = "grok-4.7"
-# why-synthesizer = "grok-4.7"
-# reflect-tooling = "grok-4.7"
-# arena-runners = ["grok-4.7"]
-# arena-cross-judge-pool = ["grok-4.7"]
-# swarm-workers = "grok-4.7"
-# architect-runners = ["grok-4.7"]
-# interrogate-reviewers = ["grok-4.7"]
-EOF
-}
 
 instruction_block() {
   cat <<EOF
 ${MARKER_BEGIN}
 pstack is installed in this repository (project scope).
-Skills live in \`.agents/skills/\` and are also linked from \`.claude/skills/\` and \`.grok/skills/\`.
-Model config for Claude Code (edit this): \`.agents/pstack-models.md\`
-Model config for Grok Build: \`.grok/rules/pstack-models.md\` and \`.grok/pstack-models.toml\`
-Do not mix vendors in one sheet. Project files win over home-directory sheets.
+Skills live in \`.agents/skills/\` and are linked from \`.claude/skills/\`.
+Grok Build uses those same directories; this installer does not write \`.grok/\`.
+Model config (edit this): \`.agents/pstack-models.md\`
+Project files win over home-directory sheets.
 Use poteto-mode / /poteto-mode for non-trivial engineering work.
 Do not delete generated verification skills (\`verify-*\` other than \`verify-commands\`).
 ${MARKER_END}
-EOF
-}
-
-grok_rule_body() {
-  cat <<EOF
-${GROK_MARKER_BEGIN}
-# pstack-managed-id: ${MANAGED_ID}
-
-Read \`.grok/rules/pstack-models.md\` before any spawn_subagent.
-That file is Grok-only. Do not apply Claude slugs from
-\`.agents/pstack-models.md\` on Grok Build.
-Project Grok files win over ~/.grok/rules/pstack-models.md and
-~/.grok/pstack-models.toml.
-If a role is inherit-parent or auto, omit the model field.
-${GROK_MARKER_END}
 EOF
 }
 
@@ -930,20 +760,17 @@ strip_marked_section() {
 
 write_models() {
   models_md_body_claude | write_owned_file "$MODELS_MD" skip-if-exists
-  models_md_body_grok | write_owned_file "$MODELS_GROK_MD" skip-if-exists
-  models_toml_body | write_owned_file "$MODELS_GROK_TOML" skip-if-exists
 }
 
 write_instructions() {
   upsert_marked_section "$CLAUDE_MD" "$MARKER_BEGIN" "$MARKER_END" "$(instruction_block)"
   upsert_marked_section "$AGENTS_MD" "$MARKER_BEGIN" "$MARKER_END" "$(instruction_block)"
-  grok_rule_body | write_owned_file "$GROK_RULE" skip-if-foreign
 }
 
 ensure_gitignore() {
   local block
-  block="$(printf '%s\n%s\n%s\n' "$GROK_MARKER_BEGIN" ".pstack/" "$GROK_MARKER_END")"
-  upsert_marked_section "$GITIGNORE" "$GROK_MARKER_BEGIN" "$GROK_MARKER_END" "$block"
+  block="$(printf '%s\n%s\n%s\n' "$HASH_MARKER_BEGIN" ".pstack/" "$HASH_MARKER_END")"
+  upsert_marked_section "$GITIGNORE" "$HASH_MARKER_BEGIN" "$HASH_MARKER_END" "$block"
 }
 
 write_state() {
@@ -967,15 +794,35 @@ print_model_notice() {
 Model config (you will probably want to adjust this):
   ${MODELS_MD}
 
-Grok-specific copies (kept in sync only on first write; later edits stay):
-  ${MODELS_GROK_MD}
-  ${MODELS_GROK_TOML}
-
-The generated sheet uses inherit-parent so Claude Code and Grok Build remotes
-work with whatever model the parent session already has. Each file includes a commented late-September 2026 pin for that host
-only (Claude: claude-sonnet-5 / claude-opus-5-5; Grok: grok-4.7).
-Existing model files are not overwritten.
+The sheet uses inherit-parent so remotes follow the parent session model.
+A commented late-September 2026 Claude pin is in the file
+(claude-sonnet-5 / claude-opus-5-5). Existing model files are not overwritten.
+Grok Build reads .agents/ and .claude/; this installer does not write .grok/.
 EOF
+}
+
+cleanup_legacy_grok() {
+  # Older installer versions wrote .grok/. Stop creating it; drop files we owned.
+  local grok_skills="${ROOT}/.grok/skills"
+  local path full
+  if [[ -d "$grok_skills" && ! -L "$grok_skills" ]]; then
+    assert_under_root "$grok_skills"
+    shopt -s nullglob
+    for path in "$grok_skills"/*; do
+      remove_owned_skill_entry "$path"
+    done
+    shopt -u nullglob
+  fi
+  for full in \
+    "${ROOT}/.grok/rules/pstack-models.md" \
+    "${ROOT}/.grok/pstack-models.toml" \
+    "${ROOT}/.grok/rules/pstack.md"
+  do
+    if exists_any "$full" && is_managed_file "$full"; then
+      run_rm -f "$full"
+      log "rm    $(relpath "$full") (legacy .grok file; Grok reads .agents/.claude)"
+    fi
+  done
 }
 
 remove_owned_skill_entry() {
@@ -1006,10 +853,11 @@ remove_owned_skill_entry() {
 uninstall() {
   strip_marked_section "$CLAUDE_MD" "$MARKER_BEGIN" "$MARKER_END"
   strip_marked_section "$AGENTS_MD" "$MARKER_BEGIN" "$MARKER_END"
-  strip_marked_section "$GITIGNORE" "$GROK_MARKER_BEGIN" "$GROK_MARKER_END"
+  strip_marked_section "$GITIGNORE" "$HASH_MARKER_BEGIN" "$HASH_MARKER_END"
+  cleanup_legacy_grok
 
   local base path
-  for base in "$AGENTS_SKILLS" "$CLAUDE_SKILLS" "$GROK_SKILLS"; do
+  for base in "$AGENTS_SKILLS" "$CLAUDE_SKILLS"; do
     [[ -d "$base" && ! -L "$base" ]] || continue
     assert_under_root "$base"
     shopt -s nullglob
@@ -1021,7 +869,7 @@ uninstall() {
 
   if [[ "$PURGE_CONFIG" -eq 1 ]]; then
     local full
-    for full in "$MODELS_MD" "$MODELS_GROK_MD" "$MODELS_GROK_TOML" "$GROK_RULE"; do
+    for full in "$MODELS_MD"; do
       if exists_any "$full" && is_managed_file "$full"; then
         run_rm -f "$full"
         log "rm    $(relpath "$full")"
@@ -1060,6 +908,7 @@ install_or_update() {
   [[ "$DRY_RUN" -eq 1 ]] && { print_model_notice; return 0; }
   : >"$MANIFEST"
   install_skills
+  cleanup_legacy_grok
   write_models
   write_instructions
   ensure_gitignore
